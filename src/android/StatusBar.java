@@ -22,8 +22,10 @@ package org.apache.cordova.statusbar;
 import android.graphics.Color;
 import android.os.Build;
 import android.view.View;
+import android.view.ViewParent;
 import android.view.Window;
 import android.view.WindowManager;
+import android.widget.FrameLayout;
 
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.view.WindowCompat;
@@ -200,10 +202,16 @@ public class StatusBar extends CordovaPlugin {
         window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS); // SDK 19-30
         window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS); // SDK 21
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
-            // A funcao e depreciada a partir do Android 15 e nao tem mais efeito (GESTOR-21) -
-            // mesma abordagem do fork moodlemobile/cordova-plugin-statusbar (MOBILE-4840): so
-            // ajustamos a cor do texto/icones (abaixo), sem chamar a API depreciada.
+            // A funcao e depreciada a partir do Android 15 e nao tem mais efeito (GESTOR-21).
             window.setStatusBarColor(color);
+        } else {
+            // Android 15+: em modo edge-to-edge (ver hooks/after_prepare do gestor-android), o
+            // cordova-android core (SystemBarPlugin) cria uma View marcada "statusBarView" atras
+            // da status bar em vez de pintar via Window - pintamos essa mesma View (GESTOR-20).
+            View edgeToEdgeStatusBar = findEdgeToEdgeStatusBarView();
+            if (edgeToEdgeStatusBar != null) {
+                edgeToEdgeStatusBar.setBackgroundColor(color);
+            }
         }
 
         if (useLightForeground) {
@@ -222,9 +230,16 @@ public class StatusBar extends CordovaPlugin {
 
         window.getDecorView().setSystemUiVisibility(visibility);
 
-        if (isTransparent && Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
-            // A funcao e depreciada a partir do Android 15 e nao tem mais efeito (GESTOR-21).
-            window.setStatusBarColor(Color.TRANSPARENT);
+        if (isTransparent) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+                // A funcao e depreciada a partir do Android 15 e nao tem mais efeito (GESTOR-21).
+                window.setStatusBarColor(Color.TRANSPARENT);
+            } else {
+                View edgeToEdgeStatusBar = findEdgeToEdgeStatusBarView();
+                if (edgeToEdgeStatusBar != null) {
+                    edgeToEdgeStatusBar.setBackgroundColor(Color.TRANSPARENT);
+                }
+            }
         }
     }
 
@@ -251,6 +266,30 @@ public class StatusBar extends CordovaPlugin {
         return Color.luminance(color) < 0.5;
     }
 
+    /**
+     * Tenta localizar a "statusBarView" criada pelo cordova-android core (CordovaActivity /
+     * SystemBarPlugin) quando a Activity roda em modo edge-to-edge (Android 11+ / API 30+ - ver
+     * hooks/after_prepare/020_fix_keyboard_resize_old_android.js no gestor-android, que so deixa
+     * o modo edge-to-edge do core rodar nessas versoes). Retorna null em versoes mais antigas,
+     * onde o app ainda usa o layout classico (sem edge-to-edge) e a View nunca e criada.
+     */
+    private View findEdgeToEdgeStatusBarView() {
+        ViewParent parent = webView.getView().getParent();
+        if (!(parent instanceof FrameLayout)) {
+            return null;
+        }
+
+        FrameLayout root = (FrameLayout) parent;
+        for (int i = 0; i < root.getChildCount(); i++) {
+            View child = root.getChildAt(i);
+            if ("statusBarView".equals(child.getTag())) {
+                return child;
+            }
+        }
+
+        return null;
+    }
+
     private void setNavigationBarBackgroundColor(final String colorPref) {
         if (colorPref.isEmpty() || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return; // SDK 26
 
@@ -262,10 +301,17 @@ public class StatusBar extends CordovaPlugin {
             return;
         }
 
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
             // A funcao e depreciada a partir do Android 15 e nao tem mais efeito (GESTOR-21).
-            window.setNavigationBarColor(color);
+            // Diferente da status bar, o cordova-android core tambem nao tem uma View de scrim
+            // para a nav bar (o proprio SystemBarPlugin dele ainda chama Window.setNavigationBarColor
+            // sem alternativa) - entao, sem uma cor real pintada, nao forcamos a aparencia dos
+            // icones aqui tambem, para nao repetir o mesmo descompasso do GESTOR-20 (icones
+            // claros/escuros pensados para uma cor que nunca chega a ser aplicada).
+            return;
         }
+
+        window.setNavigationBarColor(color);
 
         final boolean useLightForeground = isLightModeNeeded(color);
 
